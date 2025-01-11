@@ -1,0 +1,95 @@
+name: Windows build
+on:
+  workflow_call:
+    inputs:
+      repository:
+        default: ${{ github.repository }}
+        required: false
+        type: string
+      rime_plugins:
+        required: false
+        type: string
+
+jobs:
+  build-mingw:
+    runs-on: windows-latest
+    env:
+      RIME_PLUGINS: ${{ inputs.rime_plugins }}
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Install dependencies with MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          release: false
+          update: true
+          msystem: UCRT64
+          install: >-
+            git
+            base-devel
+            mingw-w64-ucrt-x86_64-boost
+            mingw-w64-ucrt-x86_64-glog
+            mingw-w64-ucrt-x86_64-gtest
+            mingw-w64-ucrt-x86_64-yaml-cpp
+            mingw-w64-ucrt-x86_64-leveldb
+            mingw-w64-ucrt-x86_64-marisa
+            mingw-w64-ucrt-x86_64-opencc
+          pacboy: >-
+            toolchain:p
+            cmake:p
+            ninja:p
+
+      - run: git config --global core.autocrlf input
+      - name: Checkout last commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository }}
+            
+      - name: Configure build environment
+        run: |
+          echo git_ref_name="$(git describe --always)" >> $GITHUB_ENV
+
+      - name: Install Rime plugins
+        run: ./action-install-plugins-macos.sh
+
+      - name: Build with mingw-w64
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/dist \
+            -DCMAKE_BUILD_TYPE:STRING=Release \
+            -DENABLE_LOGGING:BOOL=ON \
+            -DBUILD_TEST:BOOL=ON \
+            -DBUILD_STATIC:BOOL=ON \
+            -DBUILD_SHARED_LIBS:BOOL=ON
+          cmake --build build
+          cmake --install build
+          cd build && cp ./bin/librime.dll ./test
+          ctest --output-on-failure
+
+      - name: Copy necessary DLLs
+        run: |
+          cp /c/msys64/ucrt64/bin/libstdc++-6.dll dist/lib/
+          cp /c/msys64/ucrt64/bin/libgcc_s_seh-1.dll dist/lib/
+          cp /c/msys64/ucrt64/bin/libglog-2.dll dist/lib/
+          cp /c/msys64/ucrt64/bin/libleveldb.dll dist/lib/
+          cp /c/msys64/ucrt64/bin/libmarisa-0.dll dist/lib/
+          cp /c/msys64/ucrt64/bin/libopencc-1.1.dll dist/lib/
+          cp /c/msys64/ucrt64/bin/libyaml-cpp.dll dist/lib/
+          cp ./build/plugins/quickjs/libquickjs.dll dist/lib/
+
+      - name: Create distributable
+        run: |
+          tar -cjvf rime-${{ env.git_ref_name }}-${{ runner.os }}-mingw.tar.bz2 \
+          dist version-info.txt
+          tar -cjvf rime-deps-${{ env.git_ref_name }}-${{ runner.os }}-mingw.tar.bz2 \
+          --exclude '*/.placeholder' \
+          bin include lib share
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-${{ runner.os }}-mingw
+          path: |
+            rime-${{ env.git_ref_name }}-${{ runner.os }}-mingw.tar.bz2
